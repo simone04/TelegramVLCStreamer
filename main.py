@@ -6,104 +6,83 @@ from telethon.tl.patched import Message
 import subprocess
 from user import config 
 
+# Parametri configurabili
+CHUNK_SIZE = 1024 * 1024  # 1MB per chunk
+DEFAULT_PORT = 8080
+VIDEO_CACHE_TIME = 3600  # 1 ora per caching headers
+PLAYER_COMMAND = ['vlc', '--network-caching=1000', '--no-metadata-network-access']
 
-async def start_stream_server(client : TelegramClient, message : Message, port=8080):
+async def start_stream_server(client: TelegramClient, message: Message, port=DEFAULT_PORT):
     app = web.Application()
     routes = web.RouteTableDef()
 
     @routes.get('/stream')
     async def video_stream(request):
-
-        chunk_size = 256 * 1024 
-
-        range_header = request.headers.get('Range')
         total_size = message.document.size
-        offset = 0
-
+        range_header = request.headers.get('Range', '')
         headers = {
-            'Content-Type': 'video/mp4',
-            'Content-Disposition': 'inline',
             'Accept-Ranges': 'bytes',
-            'Content-Length': None
+            'Content-Disposition': 'inline',
+            'Cache-Control': f'max-age={VIDEO_CACHE_TIME}, public'
         }
-        status_code = 200 
 
-        limit = total_size
+        # Determinazione Content-Type
+        mime_type = getattr(message.document, 'mime_type', 'video/mp4')
+        headers['Content-Type'] = mime_type or 'video/mp4'
 
-        # from here just a big mess, onestly i lost track of the variables
+        # Parsing range header
+        start, end = 0, total_size - 1
         if range_header:
             match = re.match(r'bytes=(\d+)-(\d*)', range_header)
             if match:
-                start_str, end_str = match.groups()
-                offset = int(start_str)
-
-                if end_str: 
-                    limit = int(end_str) - offset + 1
-
-                else: 
-                    limit = total_size - offset
+                start = int(match.group(1))
+                end = int(match.group(2)) if match.group(2) else total_size - 1
+                end = min(end, total_size - 1)
                 
-                if offset + limit > total_size: 
-                    limit = total_size - offset
-                        
-                if offset >= total_size or limit <= 0: 
-                    return web.Response(status=416, text="Range Not Satisfiable")
+                if start >= total_size: return web.Response(status=416)
 
-                status_code = 206 # Partial Content
-                headers['Content-Range'] = f'bytes {offset}-{offset + limit - 1}/{total_size}'
-                headers['Content-Length'] = str(limit)            
-            else:
-                range_header = None 
-                headers['Content-Length'] = str(total_size)
+                headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+                status_code = 206
+                content_length = end - start + 1
+
+            else: return web.Response(status=416)
         else:
-            headers['Content-Length'] = str(total_size)
-        
-        response = web.StreamResponse(status=status_code, headers=headers)
+            status_code = 200
+            content_length = total_size
+
+        headers['Content-Length'] = str(content_length)
+        response = web.StreamResponse( status=status_code, headers=headers)
         await response.prepare(request)
 
-        bytes_to_send = limit
-
-        async for chunk in client.iter_download(message.document, offset=offset,  request_size=limit,  limit=limit,  chunk_size=chunk_size):
-            if not chunk: break
+        bytes_remaining = content_length
+        async for chunk in client.iter_download( message.document, offset=start, request_size=CHUNK_SIZE, limit=content_length, chunk_size=CHUNK_SIZE):
+            if bytes_remaining <= 0: break
             
-            send_now = min(len(chunk), bytes_to_send)
+            chunk_size = min(len(chunk), bytes_remaining)
+            await response.write(chunk[:chunk_size])
+            bytes_remaining -= chunk_size
 
-            if send_now <= 0: break
-
-            await response.write(chunk[:send_now])
-            bytes_to_send -= send_now
-            
-            if bytes_to_send <= 0: break
-        await response.write_eof()
         return response
-    
+
     app.add_routes(routes)
-    app['client'] = client
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, 'localhost', port) 
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"Stream server ready on http://localhost:{port}") 
+    print(f"Server streaming running: http://localhost:{port}/stream")
     return site, runner
 
-
-async def stream(client : TelegramClient, message_callback : Coroutine[Any, Any, Message | None]):
+async def stream(client: TelegramClient, message_callback: Coroutine[Any, Any, Message | None]):
     await client.start()
-    print("Client started")
-    message = await message_promise
+    message = await message_callback
 
     stream_server, runner = await start_stream_server(client, message)
-
-    stream_url = "http://localhost:8080/stream?"
-    print(f"Attempting to stream: {stream_url}")
     
-    subprocess.Popen(['vlc', '--no-metadata-network-access', stream_url])
-
-    await client.run_until_disconnected()
-    await runner.cleanup()
-
-
-
+    try:
+        subprocess.Popen([*PLAYER_COMMAND, f'http://localhost:{DEFAULT_PORT}/stream'])
+        await client.run_until_disconnected()
+    finally:
+        await runner.cleanup()
 
 if __name__ == "__main__":
     client = TelegramClient('session', config.api_id, config.api_hash)
