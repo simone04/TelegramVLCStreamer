@@ -1,14 +1,9 @@
-import asyncio
-import base64
 import re
 from typing import Any, Coroutine 
 from aiohttp import web
-from telethon.tl.types import InputDocumentFileLocation
 from telethon import TelegramClient 
 from telethon.tl.patched import Message
 import subprocess
-
-from Config import Config
 from user import config 
 
 
@@ -34,6 +29,8 @@ async def start_stream_server(client : TelegramClient, message : Message, port=8
         status_code = 200 
 
         limit = total_size
+
+        # from here just a big mess, onestly i lost track of the variables
         if range_header:
             match = re.match(r'bytes=(\d+)-(\d*)', range_header)
             if match:
