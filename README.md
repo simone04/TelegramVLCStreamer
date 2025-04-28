@@ -2,7 +2,7 @@
 
 A Python script to stream videos from Telegram directly to VLC using [Telethon](https://docs.telethon.dev/en/stable/).
 
-If you see a lot of errors is completely normal (maybe)
+If you see a lot of errors is completely normal (there is no error handling, but it works so i will not touch it)
 
 ## Features
 - Stream Telegram videos to VLC without downloading the entire file first
